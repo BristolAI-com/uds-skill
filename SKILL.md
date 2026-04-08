@@ -1,9 +1,9 @@
 ---
-name: uds-deployment
-description: Use when deploying an application to UDS (Unicorn Delivery Service) Core, scaffolding Helm charts for Zarf packages, configuring Keycloak SSO via UDS Package CR, or setting up a local k3d dev stack with UDS
+name: uds-skill
+description: Use when deploying applications to UDS Core, running UDS CLI commands (uds deploy, uds zarf, uds create), scaffolding Helm charts and Zarf packages, configuring Keycloak SSO, or setting up a local k3d dev environment with UDS
 ---
 
-# UDS Deployment
+# UDS Skill
 
 Deploy any Dockerized application on UDS Core with Keycloak SSO, Istio networking, and airgap-ready packaging.
 
@@ -34,20 +34,139 @@ The UDS Operator reads a `Package` Custom Resource to auto-configure Istio netwo
 | Falco | Runtime Security |
 | Velero | Backup & Restore |
 
-## When to Use
+## UDS CLI Reference
 
-- Deploying any app to a UDS Core environment
-- Scaffolding Helm charts, Zarf packages, or UDS bundles
-- Configuring Keycloak SSO for an application
-- Setting up local k3d dev stack with UDS Core
-- Migrating auth from any provider to Keycloak/Authservice
+Install: [UDS CLI](https://uds.defenseunicorns.com/reference/cli/overview/). Includes `zarf` via `uds zarf`.
 
-## Prerequisites
+### Core Commands
 
-- Docker
-- `uds` CLI (includes `zarf` via `uds zarf`)
-- `k3d` (for local dev)
-- An app with a working Dockerfile
+```bash
+# Zarf package commands (build & deploy individual packages)
+uds zarf package create --confirm              # Build Zarf package from zarf.yaml
+uds zarf package deploy <pkg>.tar.zst --confirm # Deploy a Zarf package to cluster
+uds zarf package remove <name> --confirm        # Remove a deployed package
+uds zarf package list                            # List deployed packages
+
+# Bundle commands (orchestrate multiple packages)
+uds create <bundle-dir>/ --confirm              # Build a UDS bundle from uds-bundle.yaml
+uds deploy <bundle>.tar.zst --confirm           # Deploy a bundle (creates cluster if k3d included)
+uds remove <bundle>.tar.zst --confirm           # Remove a deployed bundle
+
+# Task runner (like make/just for UDS workflows)
+uds run <task-name>                             # Run a task from tasks.yaml
+uds run <include>:<task-name>                   # Run a task from an included task file
+uds run --list                                  # List available tasks
+
+# Zarf variables (override at deploy time)
+uds zarf package deploy <pkg> --set KEY=value   # Set a Zarf variable
+# Or via environment: ZARF_VAR_KEY=value uds zarf package deploy <pkg>
+
+# Built-in tools (bundled with uds)
+uds zarf tools kubectl <args>                   # kubectl without separate install
+uds zarf tools monitor                          # k9s cluster monitor
+```
+
+### Inspect & Debug
+
+```bash
+# Check deployed packages and UDS status
+uds zarf tools kubectl get packages -A          # List all UDS Package CRs
+uds zarf tools kubectl get package -n <ns>      # Package CR status (SSO, endpoints, policies)
+uds zarf tools kubectl logs -n <ns> -l <label>  # App logs
+uds zarf tools kubectl get pods -n <ns>         # Pod status
+
+# Keycloak admin password
+uds zarf tools kubectl get secret keycloak-admin-password \
+  -n keycloak -o jsonpath='{.data.password}' | base64 -d
+```
+
+## Local Dev Setup
+
+### Prerequisites
+
+Install: [UDS CLI](https://uds.defenseunicorns.com/reference/cli/overview/) (includes `zarf`), [k3d](https://k3d.io/), [Docker](https://www.docker.com/)
+
+### From Scratch (~15 min)
+
+```bash
+# 1. Build Docker image
+docker build -t myapp:0.1.0 .
+
+# 2. Create Zarf package (pulls image from local Docker daemon)
+cd uds && uds zarf package create --confirm
+
+# 3. Create UDS bundle (downloads UDS Core ~2GB first time)
+uds create bundle/ --confirm
+
+# 4. Deploy (creates k3d cluster + UDS Core + app)
+uds deploy bundle/uds-bundle-*.tar.zst --confirm
+
+# 5. Create test user (doug / unicorn123!@#UN)
+uds run common-setup:keycloak-user
+```
+
+App at `https://myapp.uds.dev`. Login with `doug / unicorn123!@#UN`.
+
+### Redeploy App Only (cluster already running)
+
+```bash
+docker build -t myapp:0.1.0 .
+cd uds
+uds zarf package remove myapp --confirm || true
+uds zarf package create --confirm
+uds zarf package deploy zarf-package-*.tar.zst --confirm
+```
+
+### Teardown
+
+```bash
+k3d cluster delete uds
+```
+
+### Test User Setup
+
+Include the UDS common tasks in your `tasks.yaml`:
+
+```yaml
+# tasks.yaml
+includes:
+  - common-setup: https://raw.githubusercontent.com/defenseunicorns/uds-common/v1.24.0/tasks/setup.yaml
+```
+
+Available tasks from `common-setup`:
+
+| Task | What it does |
+|------|-------------|
+| `keycloak-user` | Creates a user in the UDS Keycloak realm |
+| `keycloak-admin-user` | Creates the Keycloak admin user + stores password in K8s secret |
+| `k3d-test-cluster` | Creates a k3d cluster with UDS Core Slim (lighter, for CI) |
+| `k3d-full-cluster` | Creates a k3d cluster with full UDS Core |
+| `print-keycloak-admin-password` | Prints the admin credentials |
+
+`keycloak-user` accepts inputs:
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `username` | `doug` | Username |
+| `password` | `unicorn123!@#UN` | Password |
+| `first_name` | `Doug` | First name |
+| `last_name` | `Unicorn` | Last name |
+| `group` | (from `$KEYCLOAK_USER_GROUP`) | Keycloak group to add user to |
+
+Example with custom user:
+
+```bash
+uds run common-setup:keycloak-user \
+  --set username=testadmin \
+  --set password=MyPass123! \
+  --set group="/UDS Core/Admin"
+```
+
+The task also auto-creates the Keycloak admin user if needed and disables 2FA for the test user.
+
+For custom user attributes, use the Keycloak Admin console (`https://keycloak.admin.uds.dev`) or the [Keycloak Admin REST API](https://www.keycloak.org/docs-api/latest/rest-api/index.html).
+
+**Important:** When updating user attributes via the API, always fetch the existing user first and merge -- a PUT with only new attributes overwrites the entire user object.
 
 ## File Structure
 
@@ -371,92 +490,6 @@ Use sparingly -- exemptions weaken security posture.
 - **Istio sidecar vs ambient** -- default is ambient mesh mode; set `spec.network.serviceMesh.mode: sidecar` in Package CR if needed
 - **Health check endpoints required** -- Istio needs liveness/readiness probes to work properly
 
-## Local Dev Setup
-
-### Prerequisites
-
-Install: [UDS CLI](https://uds.defenseunicorns.com/reference/cli/overview/) (includes `zarf` via `uds zarf`), [k3d](https://k3d.io/), [Docker](https://www.docker.com/)
-
-### From Scratch (~15 min)
-
-```bash
-# 1. Build Docker image
-docker build -t myapp:0.1.0 .
-
-# 2. Create Zarf package (pulls image from local Docker daemon)
-cd uds && uds zarf package create --confirm
-
-# 3. Create UDS bundle (downloads UDS Core ~2GB first time)
-uds create bundle/ --confirm
-
-# 4. Deploy (creates k3d cluster + UDS Core + app + test user)
-uds deploy bundle/uds-bundle-*.tar.zst --confirm
-uds run common-setup:keycloak-user
-```
-
-App at `https://myapp.uds.dev`. Login with `doug / unicorn123!@#UN`.
-
-### Redeploy App Only (cluster already running)
-
-```bash
-docker build -t myapp:0.1.0 .
-cd uds
-uds zarf package remove myapp --confirm || true
-uds zarf package create --confirm
-uds zarf package deploy zarf-package-*.tar.zst --confirm
-```
-
-### Teardown
-
-```bash
-k3d cluster delete uds
-```
-
-### Test User Setup
-
-Include the UDS common tasks in your `tasks.yaml`:
-
-```yaml
-# tasks.yaml
-includes:
-  - common-setup: https://raw.githubusercontent.com/defenseunicorns/uds-common/v1.24.0/tasks/setup.yaml
-```
-
-Available tasks from `common-setup`:
-
-| Task | What it does |
-|------|-------------|
-| `keycloak-user` | Creates a user in the UDS Keycloak realm |
-| `keycloak-admin-user` | Creates the Keycloak admin user + stores password in K8s secret |
-| `k3d-test-cluster` | Creates a k3d cluster with UDS Core Slim (lighter, for CI) |
-| `k3d-full-cluster` | Creates a k3d cluster with full UDS Core |
-| `print-keycloak-admin-password` | Prints the admin credentials |
-
-`keycloak-user` accepts inputs:
-
-| Input | Default | Description |
-|-------|---------|-------------|
-| `username` | `doug` | Username |
-| `password` | `unicorn123!@#UN` | Password |
-| `first_name` | `Doug` | First name |
-| `last_name` | `Unicorn` | Last name |
-| `group` | (from `$KEYCLOAK_USER_GROUP`) | Keycloak group to add user to |
-
-Example with custom user:
-
-```bash
-uds run common-setup:keycloak-user \
-  --set username=testadmin \
-  --set password=MyPass123! \
-  --set group="/UDS Core/Admin"
-```
-
-The task also auto-creates the Keycloak admin user if needed and disables 2FA for the test user.
-
-For custom user attributes (roles, permissions), use the Keycloak Admin console or the [Keycloak Admin REST API](https://www.keycloak.org/docs-api/latest/rest-api/index.html).
-
-**Important:** When updating user attributes via the API, always fetch the existing user first and merge -- a PUT with only new attributes overwrites the entire user object.
-
 ## Critical Gotchas
 
 | Gotcha | Fix |
@@ -464,11 +497,10 @@ For custom user attributes (roles, permissions), use the Keycloak Admin console 
 | Bundle `repository` has `oci://` prefix | Remove it -- UDS adds it internally |
 | Authservice rejects `/*` redirect URI | Use specific path: `/login/generic_oauth` |
 | Container crashes with permission denied | Istio may run container as different user -- ensure writable dirs in Dockerfile |
-| Same image tag = K8s reuses old pod | Use timestamp tags, sync across chart/zarf/bundle |
+| Same image tag = K8s reuses old pod | Use unique tags, sync across chart/zarf/bundle |
 | Keycloak user PUT overwrites all data | Fetch existing user, merge attributes with `jq` |
 | Port-forward blocks on stale process | Kill existing with `lsof -ti:PORT | xargs kill` before starting |
 | `common-setup:keycloak-user` ignores group param | Add group manually via Keycloak Admin API |
-| App shows "Unknown" user name | Attributes PUT overwrote name -- must merge, not replace |
 | 403 after Keycloak login | User not in required group (`/UDS Core/Admin`) |
 | "You do not have access" at Keycloak | User not in the SSO client's `groups.anyOf` group |
 | Zarf package uses cached old image | Delete old `.tar.zst`, rebuild with new tag |

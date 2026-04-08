@@ -1,6 +1,10 @@
 ---
 name: uds-skill
 description: Use when deploying applications to UDS Core, running UDS CLI commands (uds deploy, uds zarf, uds create), scaffolding Helm charts and Zarf packages, configuring Keycloak SSO, or setting up a local k3d dev environment with UDS
+compatibility: Requires docker, k3d, and uds CLI. Network access needed to pull UDS Core packages from ghcr.io.
+metadata:
+  author: Bristol AI (https://bristol-ai.com)
+  version: "1.0"
 ---
 
 # UDS Skill
